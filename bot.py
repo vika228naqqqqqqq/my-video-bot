@@ -115,8 +115,8 @@ async def handle_link(m: Message):
     msg = await m.answer("Скачиваю видео по ссылке... Это может занять пару минут.")
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
     
-    # Скачиваем через yt-dlp
-      ydl_cmd = [
+       # Скачиваем через yt-dlp
+    ydl_cmd = [
         "yt-dlp",
         "--cookies", "/etc/secrets/youtube_cookies.txt",
         "--extractor-args", "youtube:player_client=tv,mweb",
@@ -125,12 +125,11 @@ async def handle_link(m: Message):
         "-o", video_path,
         m.text
     ]
-    ]    try:
-      await asyncio.to_thread(subprocess.run, ydl_cmd, check=True)
+    try:
+        await asyncio.to_thread(subprocess.run, ydl_cmd, check=True)
     except subprocess.CalledProcessError:
         await msg.edit_text("Не удалось скачать видео по ссылке. Возможно, оно приватное или ссылка неверная.")
         return
-
     state["video_path"] = video_path
     state["step"] = "wait_mode"
     await msg.edit_text("Видео скачано! Выбери, как показать баннер:", reply_markup=get_mode_kb())
