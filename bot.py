@@ -126,7 +126,7 @@ async def handle_link(m: Message):
         m.text
     ]
     ]    try:
-        await asyncio.to_thread(subprocess.run, ydl_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      await asyncio.to_thread(subprocess.run, ydl_cmd, check=True)
     except subprocess.CalledProcessError:
         await msg.edit_text("Не удалось скачать видео по ссылке. Возможно, оно приватное или ссылка неверная.")
         return
