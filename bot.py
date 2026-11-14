@@ -21,19 +21,17 @@ os.makedirs("temp", exist_ok=True)
 os.makedirs("banners", exist_ok=True)
 user_states = {}
 
-def get_kb():
+def get_mode_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1. Сверху видео (всегда)", callback_data="pos_top")],
-        [InlineKeyboardButton(text="2. В середине видео (всегда)", callback_data="pos_center")],
-        [InlineKeyboardButton(text="3. Внизу видео (всегда)", callback_data="pos_bottom")],
-        [InlineKeyboardButton(text="4. Остановить видео (пауза)", callback_data="pos_pause")],
+        [InlineKeyboardButton(text="1. Наложить поверх (видео идет)", callback_data="mode_overlay")],
+        [InlineKeyboardButton(text="2. Поставить на паузу (видео замирает)", callback_data="mode_pause")],
     ])
 
-def get_pause_pos_kb():
+def get_pos_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Сверху", callback_data="p_pos_top")],
-        [InlineKeyboardButton(text="В середине", callback_data="p_pos_center")],
-        [InlineKeyboardButton(text="Внизу", callback_data="p_pos_bottom")],
+        [InlineKeyboardButton(text="Сверху", callback_data="pos_top")],
+        [InlineKeyboardButton(text="В середине", callback_data="pos_center")],
+        [InlineKeyboardButton(text="Внизу", callback_data="pos_bottom")],
     ])
 
 @dp.message(Command("start"))
@@ -41,8 +39,7 @@ async def cmd_start(m: Message):
     user_states[m.from_user.id] = {"step": "wait_banner", "banner_path": None, "video_path": None}
     await m.answer(
         "Привет! 👋\n\n"
-        "Сначала **отправь мне баннер** (гифку, картинку или короткое видео).\n"
-        "Потом я попрошу видео, и мы сделаем магию!"
+        "Сначала **отправь мне баннер** (гифку, картинку или короткое видео)."
     )
 
 @dp.message(Command("cancel"))
@@ -50,6 +47,7 @@ async def cmd_cancel(m: Message):
     user_states[m.from_user.id] = {"step": "wait_banner", "banner_path": None, "video_path": None}
     await m.answer("Сбросил. Начинаем заново! Отправь мне баннер.")
 
+# --- ШАГ 1: БАННЕР ---
 @dp.message(F.animation | F.photo | F.document)
 async def handle_banner(m: Message):
     uid = m.from_user.id
@@ -85,6 +83,7 @@ async def handle_banner(m: Message):
     state["step"] = "wait_video"
     await m.answer("Баннер принят! ✅\n\nТеперь **отправь мне видео**, на которое я наложу этот баннер.")
 
+# --- ШАГ 2: ВИДЕО ---
 @dp.message(F.video)
 async def handle_video(m: Message):
     uid = m.from_user.id
@@ -100,118 +99,115 @@ async def handle_video(m: Message):
     await bot.download_file(f.file_path, video_path)
 
     state["video_path"] = video_path
-    state["step"] = "wait_action"
-    await m.answer("Видео загружено! Выбери, что сделать с баннером:", reply_markup=get_kb())
+    state["step"] = "wait_mode"
+    await m.answer("Видео загружено! Выбери, как показать баннер:", reply_markup=get_mode_kb())
 
-@dp.callback_query(F.data.startswith("pos_"))
-async def handle_cb(cb: CallbackQuery):
+# --- ШАГ 3: ВЫБОР РЕЖИМА ---
+@dp.callback_query(F.data.startswith("mode_"))
+async def handle_mode(cb: CallbackQuery):
     uid = cb.from_user.id
     state = user_states.get(uid)
-    
-    if not state or state.get("step") != "wait_action":
-        await cb.message.edit_text("Видео устарело. Нажми /start и отправь заново.")
-        await cb.answer()
-        return
-    
-    await cb.answer()
-    
-    if cb.data == "pos_pause":
-        state["step"] = "wait_pause_sec"
-        await cb.message.edit_text("На сколько секунд остановить видео? Напиши число (например: 3):")
-        return
-        
-    pmap = {"pos_top": ("0:150", "сверху"), "pos_center": ("0:(H-h)/2", "в середине"), "pos_bottom": ("0:1050", "внизу")}
-    coords, lbl = pmap[cb.data]
-    state["step"] = "processing"
-    await cb.message.edit_text(f"Монтирую (баннер {lbl} на всё видео)...")
-    await run_montage(cb.message, uid, "overlay", coords)
+    if not state: return
 
+    await cb.answer()
+    state["mode"] = cb.data.replace("mode_", "")
+    state["step"] = "wait_pos"
+    await cb.message.edit_text("Где разместить баннер?", reply_markup=get_pos_kb())
+
+# --- ШАГ 4: ВЫБОР ПОЗИЦИИ ---
+@dp.callback_query(F.data.startswith("pos_"))
+async def handle_pos(cb: CallbackQuery):
+    uid = cb.from_user.id
+    state = user_states.get(uid)
+    if not state: return
+
+    await cb.answer()
+    state["pos"] = cb.data
+    state["step"] = "wait_timing"
+    
+    await cb.message.edit_text(
+        "Отлично! Теперь напиши мне два числа через пробел:\n"
+        "**Секунда появления** и **Длительность**.\n\n"
+        "Пример: `20 6` (баннер появится на 20 секунде и продержится 6 секунд)."
+    )
+
+# --- ШАГ 5: ВРЕМЯ И ДЛИТЕЛЬНОСТЬ ---
 @dp.message(F.text)
-async def handle_sec(m: Message):
+async def handle_timing(m: Message):
     uid = m.from_user.id
     state = user_states.get(uid)
     
-    if not state or state.get("step") != "wait_pause_sec":
+    if not state or state.get("step") != "wait_timing":
         return
     
     try:
-        sec = float(m.text.replace(",", ".").strip())
-        if sec <= 0 or sec > 30:
+        parts = m.text.replace(",", ".").split()
+        start_sec = float(parts[0])
+        duration = float(parts[1])
+        if start_sec < 0 or duration <= 0:
             raise ValueError
-    except ValueError:
-        await m.answer("Введи число от 1 до 30 (например: 4).")
+    except:
+        await m.answer("Пожалуйста, напиши два числа через пробел. Например: `20 6`")
         return
         
-    state["pause_sec"] = sec
-    state["step"] = "wait_pause_pos"
-    await m.answer("Отлично! Теперь выбери, где будет баннер во время паузы:", reply_markup=get_pause_pos_kb())
-
-@dp.callback_query(F.data.startswith("p_pos_"))
-async def handle_pause_pos(cb: CallbackQuery):
-    uid = cb.from_user.id
-    state = user_states.get(uid)
-    
-    if not state or state.get("step") != "wait_pause_pos":
-        await cb.message.edit_text("Что-то пошло не так. Начни заново с /start")
-        await cb.answer()
-        return
-
-    await cb.answer()
     state["step"] = "processing"
+    state["start_sec"] = start_sec
+    state["duration"] = duration
     
-    pos_map = {"p_pos_top": "0:150", "p_pos_center": "0:(H-h)/2", "p_pos_bottom": "0:1050"}
-    coords = pos_map[cb.data]
-    sec = state["pause_sec"]
-    
-    await cb.message.edit_text(f"Делаю паузу на {sec} сек. и вставляю баннер...")
-    await run_montage(cb.message, uid, "pause", coords=coords, pause_sec=sec)
+    await m.answer(f"Монтирую (с {start_sec} сек., длительность {duration} сек.)...")
+    await run_montage(m, uid)
 
-
-async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050", pause_sec: float = 3.0):
+# --- ГЛАВНАЯ ФУНКЦИЯ СБОРКИ ---
+async def run_montage(msg: Message, uid: int):
     state = user_states.get(uid)
-    if not state:
-        return
+    if not state: return
         
     inp = state["video_path"]
     bn = state["banner_path"]
-    mid_id = msg.message_id
-    fpath = f"temp/final_{uid}_{mid_id}.mp4"
+    mode = state["mode"]
+    pos = state["pos"]
+    start = state["start_sec"]
+    dur = state["duration"]
+    
+    end = start + dur
+    fpath = f"temp/final_{uid}_{msg.message_id}.mp4"
+    
+    coords_map = {"pos_top": "0:150", "pos_center": "0:(H-h)/2", "pos_bottom": "0:1050"}
+    coords = coords_map.get(pos, "0:(H-h)/2")
     
     largs = ["-ignore_loop", "0"] if bn.lower().endswith((".gif", ".png", ".jpg", ".jpeg")) else ["-stream_loop", "-1"]
     
     try:
         if mode == "overlay":
-            cmd = ["ffmpeg", "-y", "-threads", "2", "-i", inp, *largs, "-i", bn, "-filter_complex", f"[1:v]scale=1080:-1[bn];[0:v][bn]overlay={coords}:shortest=1[v]", "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "copy", fpath]
+            # Наложение поверх без паузы (видео идет)
+            cmd = ["ffmpeg", "-y", "-threads", "2", "-i", inp, *largs, "-i", bn, 
+                   "-filter_complex", f"[1:v]scale=1080:-1[bn];[0:v][bn]overlay={coords}:enable='between(t,{start},{end})'[v]", 
+                   "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "copy", fpath]
             await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
         else:
-            # Узнаем длительность видео
-            dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inp]
-            dur_res = await asyncio.to_thread(subprocess.run, dur_cmd, capture_output=True, text=True)
-            total_dur = float(dur_res.stdout.strip()) if dur_res.stdout.strip() else 10.0
-            h = total_dur / 2
+            # Режим паузы (видео замирает, баннер висит dur секунд)
+            p1 = f"temp/p1_{uid}.mp4"
+            p2 = f"temp/p2_{uid}.mp4"
+            pause_vid = f"temp/pause_vid_{uid}.mp4"
             
-            p1 = f"temp/p1_{uid}_{mid_id}.mp4"
-            p2 = f"temp/p2_{uid}_{mid_id}.mp4"
-            pause_vid = f"temp/pause_vid_{uid}_{mid_id}.mp4"
+            # 1. Режем
+            c1 = ["ffmpeg", "-y", "-threads", "2", "-i", inp, "-t", str(start), "-c", "copy", p1]
+            c2 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(start), "-i", inp, "-c", "copy", p2]
             
-            c1 = ["ffmpeg", "-y", "-threads", "2", "-i", inp, "-t", str(h), "-c", "copy", p1]
-            c2 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-c", "copy", p2]
-            
-            # САМЫЙ НАДЕЖНЫЙ СПОСОБ ЗАМОРОЗКИ: Берем кадр, убираем звук, и с помощью -vf fps=30 и цикла 
-            # создаем видео. Это не вызывает ошибку 234.
-            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
+            # 2. Замораживаем кадр и накладываем баннер (без ошибки 234)
+            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(start), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
                   "-filter_complex", f"[0:v]loop=loop=-1:size=1,setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
-                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
+                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(dur), pause_vid]
             
+            # 3. Склеиваем
             c4 = ["ffmpeg", "-y", "-threads", "2", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", fpath]
             
             for sc in (c1, c2, c3, c4):
                 await asyncio.to_thread(subprocess.run, sc, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
             for tf in (p1, p2, pause_vid):
-                if os.path.exists(tf):
-                    os.remove(tf)
+                if os.path.exists(tf): os.remove(tf)
                     
         await msg.answer_video(FSInputFile(fpath))
         await msg.answer("Готово! Видео обработано.")
@@ -219,10 +215,8 @@ async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050",
     except Exception as e:
         await msg.edit_text(f"Ошибка: {e}")
     finally:
-        if os.path.exists(inp):
-            os.remove(inp)
-        if os.path.exists(fpath):
-            os.remove(fpath)
+        if os.path.exists(inp): os.remove(inp)
+        if os.path.exists(fpath): os.remove(fpath)
         user_states[uid] = {"step": "wait_banner", "banner_path": None, "video_path": None}
 
 async def handle(request):
