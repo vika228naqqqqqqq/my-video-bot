@@ -50,7 +50,6 @@ async def cmd_cancel(m: Message):
     user_states[m.from_user.id] = {"step": "wait_banner", "banner_path": None, "video_path": None}
     await m.answer("Сбросил. Начинаем заново! Отправь мне баннер.")
 
-# --- ШАГ 1: БАННЕР ---
 @dp.message(F.animation | F.photo | F.document)
 async def handle_banner(m: Message):
     uid = m.from_user.id
@@ -86,7 +85,6 @@ async def handle_banner(m: Message):
     state["step"] = "wait_video"
     await m.answer("Баннер принят! ✅\n\nТеперь **отправь мне видео**, на которое я наложу этот баннер.")
 
-# --- ШАГ 2: ВИДЕО ---
 @dp.message(F.video)
 async def handle_video(m: Message):
     uid = m.from_user.id
@@ -105,7 +103,6 @@ async def handle_video(m: Message):
     state["step"] = "wait_action"
     await m.answer("Видео загружено! Выбери, что сделать с баннером:", reply_markup=get_kb())
 
-# --- ШАГ 3: ВЫБОР ДЕЙСТВИЯ ---
 @dp.callback_query(F.data.startswith("pos_"))
 async def handle_cb(cb: CallbackQuery):
     uid = cb.from_user.id
@@ -129,7 +126,6 @@ async def handle_cb(cb: CallbackQuery):
     await cb.message.edit_text(f"Монтирую (баннер {lbl} на всё видео)...")
     await run_montage(cb.message, uid, "overlay", coords)
 
-# --- ШАГ 4: ВРЕМЯ ПАУЗЫ ---
 @dp.message(F.text)
 async def handle_sec(m: Message):
     uid = m.from_user.id
@@ -150,7 +146,6 @@ async def handle_sec(m: Message):
     state["step"] = "wait_pause_pos"
     await m.answer("Отлично! Теперь выбери, где будет баннер во время паузы:", reply_markup=get_pause_pos_kb())
 
-# --- ШАГ 5: ВЫБОР ПОЗИЦИИ ДЛЯ ПАУЗЫ ---
 @dp.callback_query(F.data.startswith("p_pos_"))
 async def handle_pause_pos(cb: CallbackQuery):
     uid = cb.from_user.id
@@ -172,7 +167,6 @@ async def handle_pause_pos(cb: CallbackQuery):
     await run_montage(cb.message, uid, "pause", coords=coords, pause_sec=sec)
 
 
-# --- ГЛАВНАЯ ФУНКЦИЯ СБОРКИ ВИДЕО (БЕЗ НАРЕЗКИ НА КУСКИ) ---
 async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050", pause_sec: float = 3.0):
     state = user_states.get(uid)
     if not state:
@@ -183,18 +177,14 @@ async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050",
     mid_id = msg.message_id
     fpath = f"temp/final_{uid}_{mid_id}.mp4"
     
-    # Для GIF и картинок - один цикл, для видео - зацикливаем, если нужно
     largs = ["-ignore_loop", "0"] if bn.lower().endswith((".gif", ".png", ".jpg", ".jpeg")) else ["-stream_loop", "-1"]
     
     try:
         if mode == "overlay":
-            # Наложение на всё видео
             cmd = ["ffmpeg", "-y", "-threads", "2", "-i", inp, *largs, "-i", bn, "-filter_complex", f"[1:v]scale=1080:-1[bn];[0:v][bn]overlay={coords}:shortest=1[v]", "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "copy", fpath]
             await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
         else:
-            # Пауза (4-й пункт). Берем середину видео и замораживаем.
-            # Узнаем длительность видео
             dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inp]
             dur_res = await asyncio.to_thread(subprocess.run, dur_cmd, capture_output=True, text=True)
             total_dur = float(dur_res.stdout.strip()) if dur_res.stdout.strip() else 10.0
@@ -204,14 +194,12 @@ async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050",
             p2 = f"temp/p2_{uid}_{mid_id}.mp4"
             pause_vid = f"temp/pause_vid_{uid}_{mid_id}.mp4"
             
-            # 1. Режем на 2 части
             c1 = ["ffmpeg", "-y", "-threads", "2", "-i", inp, "-t", str(h), "-c", "copy", p1]
             c2 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-c", "copy", p2]
             
-            # 2. Кусок с паузой (1 кадр зацикливаем)
-            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, "-filter_complex", f"[0:v]loop=loop=-1:size=1:start=0,setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
+            # ЗАМОРОЗКА КАДРА (используем tpad - самый надежный метод)
+            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, "-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={pause_sec},setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
             
-            # 3. Склеиваем
             c4 = ["ffmpeg", "-y", "-threads", "2", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", fpath]
             
             for sc in (c1, c2, c3, c4):
@@ -237,7 +225,7 @@ async def handle(request):
     return web.Response(text="Bot is running!")
 
 async def main():
-    print("Новый бот с кнопками успешно запущен!")
+    print("Бот запущен!")
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
