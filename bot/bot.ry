@@ -1,0 +1,108 @@
+import os
+import asyncio
+import subprocess
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import Message, FSInputFile
+
+TOKEN = "9034575471:AAEGmNEfG_76KvNdBvtjQ8LFwr9v-m8IrJ4"
+CLIP_DURATION = 12
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+os.makedirs("temp", exist_ok=True)
+BANNER_PATH = "temp/banner.png"
+
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer(
+        "Привет! Я бот для автоматической нарезки видео.\n\n"
+        "Как работать:\n"
+        "1. Отправь мне картинку (баннер) как фото или файл.\n"
+        "2. Отправь исходное видео (до 20 МБ).\n"
+        f"3. Я нарежу его на вертикальные клипы по {CLIP_DURATION} сек. с баннером снизу."
+    )
+
+
+@dp.message(F.photo | F.document)
+async def handle_banner(message: Message):
+    if message.document and not message.document.mime_type.startswith("image/"):
+        await message.answer("Пожалуйста, отправь именно картинку для баннера (PNG или JPG).")
+        return
+
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    file = await bot.get_file(file_id)
+    await bot.download_file(file.file_path, BANNER_PATH)
+    await message.answer("Баннер сохранен! Теперь отправь мне видео для нарезки.")
+
+
+@dp.message(F.video)
+async def handle_video(message: Message):
+    if not os.path.exists(BANNER_PATH):
+        await message.answer("Сначала отправь картинку-баннер, который нужно наложить на видео!")
+        return
+
+    status_msg = await message.answer("Скачиваю видео и запускаю монтаж...")
+    input_path = f"temp/input_{message.message_id}.mp4"
+    output_pattern = f"temp/clip_{message.message_id}_%03d.mp4"
+
+    file = await bot.get_file(message.video.file_id)
+    await bot.download_file(file.file_path, input_path)
+
+    filter_complex = (
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920[bg];"
+        "[1:v]scale=850:-1[bn];"
+        "[bg][bn]overlay=(W-w)/2:H-h-180[v]"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-i", BANNER_PATH,
+        "-filter_complex", filter_complex,
+        "-map", "[v]",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-f", "segment",
+        "-segment_time", str(CLIP_DURATION),
+        "-reset_timestamps", "1",
+        output_pattern
+    ]
+
+    try:
+        await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await status_msg.edit_text("Нарезка завершена! Отправляю готовые клипы...")
+
+        clips = sorted([
+            f for f in os.listdir("temp")
+            if f.startswith(f"clip_{message.message_id}_") and f.endswith(".mp4")
+        ])
+
+        for clip_name in clips:
+            clip_path = os.path.join("temp", clip_name)
+            await message.answer_video(FSInputFile(clip_path))
+            os.remove(clip_path)
+
+        await message.answer(f"Готово! Создано роликов: {len(clips)}")
+
+    except Exception as e:
+        await status_msg.edit_text(f"Ошибка при обработке видео. Проверь, лежит ли ffmpeg.exe в папке.\nДетали: {e}")
+
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+
+async def main():
+    print("Бот успешно запущен и готов к работе!")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
