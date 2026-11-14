@@ -116,8 +116,14 @@ async def handle_link(m: Message):
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
     
     # Скачиваем через yt-dlp
-    ydl_cmd = ["yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best", "--merge-output-format", "mp4", "-o", video_path, m.text]
-    try:
+    ydl_cmd = [
+        "yt-dlp",
+        "--cookies", "/etc/secrets/youtube_cookies.txt",
+        "-f", "bestvideo[height<=1080]+bestaudio/best",
+        "--merge-output-format", "mp4",
+        "-o", video_path,
+        m.text
+    ]    try:
         await asyncio.to_thread(subprocess.run, ydl_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
         await msg.edit_text("Не удалось скачать видео по ссылке. Возможно, оно приватное или ссылка неверная.")
