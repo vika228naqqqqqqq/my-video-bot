@@ -216,11 +216,8 @@ async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050",
                 c1 = ["ffmpeg", "-y", "-threads", "2", "-i", rpath, "-t", str(h), "-c", "copy", p1]
                 c2 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", rpath, "-c", "copy", p2]
                 
-                # 2. Делаем кусок, где видео стоит на паузе. 
-                # Берем 1 кадр из середины видео и делаем из него видео нужной длины.
-                c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", rpath, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
-                      "-filter_complex", f"[0:v]loop=loop=-1:size=1:start=0,setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
-                      "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
+                # 2. Делаем кусок, где видео стоит на паузе (берем 1 кадр и зацикливаем)
+                c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", rpath, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, "-filter_complex", f"[0:v]loop=loop=-1:size=1:start=0,setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
                 
                 # 3. Склеиваем всё вместе: часть 1 + пауза + часть 2
                 c4 = ["ffmpeg", "-y", "-threads", "2", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", fpath]
