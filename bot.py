@@ -185,6 +185,7 @@ async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050",
             await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
         else:
+            # Узнаем длительность видео
             dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inp]
             dur_res = await asyncio.to_thread(subprocess.run, dur_cmd, capture_output=True, text=True)
             total_dur = float(dur_res.stdout.strip()) if dur_res.stdout.strip() else 10.0
@@ -197,8 +198,11 @@ async def run_montage(msg: Message, uid: int, mode: str, coords: str = "0:1050",
             c1 = ["ffmpeg", "-y", "-threads", "2", "-i", inp, "-t", str(h), "-c", "copy", p1]
             c2 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-c", "copy", p2]
             
-            # ЗАМОРОЗКА КАДРА (используем tpad - самый надежный метод)
-            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, "-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={pause_sec},setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
+            # САМЫЙ НАДЕЖНЫЙ СПОСОБ ЗАМОРОЗКИ: Берем кадр, убираем звук, и с помощью -vf fps=30 и цикла 
+            # создаем видео. Это не вызывает ошибку 234.
+            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(h), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
+                  "-filter_complex", f"[0:v]loop=loop=-1:size=1,setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
+                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", "-t", str(pause_sec), pause_vid]
             
             c4 = ["ffmpeg", "-y", "-threads", "2", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-c:a", "aac", fpath]
             
