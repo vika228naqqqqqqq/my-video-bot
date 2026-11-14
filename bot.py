@@ -6,9 +6,14 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-with open("token.txt", "r", encoding="utf-8") as f:
-    TOKEN = f.read().strip()
-
+TOKEN = os.environ.get("BOT_TOKEN")
+if not TOKEN:
+    try:
+        with open("token.txt", "r", encoding="utf-8") as f:
+            TOKEN = f.read().strip()
+    except FileNotFoundError:
+        raise RuntimeError("Токен не найден!")
+    
 CLIP_DURATION = 12
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
