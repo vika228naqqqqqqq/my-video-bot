@@ -1,6 +1,7 @@
 import os
 import asyncio
 import subprocess
+import shutil  # <-- ДОБАВЛЕНО ДЛЯ КОПИРОВАНИЯ ФАЙЛА КУКОВ
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -115,21 +116,31 @@ async def handle_link(m: Message):
     msg = await m.answer("Скачиваю видео по ссылке... Это может занять пару минут.")
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
     
-       # Скачиваем через yt-dlp
+    # Скачиваем через yt-dlp
+    # Копируем куки в папку, доступную для записи, чтобы yt-dlp не выдавал ошибку
+    temp_cookies_path = "/tmp/youtube_cookies.txt"
+    try:
+        shutil.copyfile("/etc/secrets/youtube_cookies.txt", temp_cookies_path)
+    except FileNotFoundError:
+        await msg.edit_text("Ошибка: Файл с куками не найден на сервере. Проверьте настройки Secret Files.")
+        return
+
     ydl_cmd = [
         "yt-dlp",
-        "--cookies", "/etc/secrets/youtube_cookies.txt",
+        "--cookies", temp_cookies_path,
         "--extractor-args", "youtube:player_client=tv,mweb",
         "-f", "bestvideo[height<=1080]+bestaudio/best",
         "--merge-output-format", "mp4",
         "-o", video_path,
         m.text
     ]
+    
     try:
         await asyncio.to_thread(subprocess.run, ydl_cmd, check=True)
-    except subprocess.CalledProcessError:
-        await msg.edit_text("Не удалось скачать видео по ссылке. Возможно, оно приватное или ссылка неверная.")
+    except subprocess.CalledProcessError as e:
+        await msg.edit_text(f"Не удалось скачать видео по ссылке. Ошибка: {e}")
         return
+
     state["video_path"] = video_path
     state["step"] = "wait_mode"
     await msg.edit_text("Видео скачано! Выбери, как показать баннер:", reply_markup=get_mode_kb())
