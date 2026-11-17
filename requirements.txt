@@ -2,4 +2,3 @@ aiogram
 aiohttp
 yt-dlp[default]
 bgutil-ytdlp-pot-provider
-curl_cffi
