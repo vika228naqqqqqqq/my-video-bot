@@ -105,7 +105,7 @@ async def handle_link(m: Message):
         await msg.edit_text("Ошибка: Файл с куками не найден на сервере.")
         return
 
-    # СКАЧИВАЕМ ГОТОВЫЙ ФАЙЛ (без склейки) и в качестве до 720p
+    # МАКСИМАЛЬНО ЛЕГКОЕ СКАЧИВАНИЕ (без склейки, только готовый файл в худшем качестве)
     ydl_cmd = [
         "yt-dlp",
         "--cookies", temp_cookies_path,
@@ -113,13 +113,13 @@ async def handle_link(m: Message):
         "--remote-components", "ejs:github",
         "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
         "--extractor-args", "youtube:player_client=web,mweb,android",
-        "-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+        "-f", "worst[ext=mp4]/worst", 
+        "--no-part",
         "-o", video_path,
         m.text
     ]
     
     try:
-        # Добавляем таймаут, чтобы бот не висел вечно (180 секунд)
         result = await asyncio.wait_for(
             asyncio.to_thread(subprocess.run, ydl_cmd, capture_output=True, text=True),
             timeout=180.0
@@ -196,20 +196,20 @@ async def run_montage(msg: Message, uid: int):
     largs = ["-ignore_loop", "0"] if bn.lower().endswith((".gif", ".png", ".jpg", ".jpeg")) else ["-stream_loop", "-1"]
     try:
         if mode == "overlay":
-            cmd = ["ffmpeg", "-y", "-threads", "2", "-i", inp, *largs, "-i", bn, 
-                   "-filter_complex", f"[1:v]scale=1080:-1[bn];[0:v][bn]overlay={coords}:enable='between(t,{start},{end})'[v]", 
-                   "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "copy", fpath] # crf 28 = чуть меньше размер
+            cmd = ["ffmpeg", "-y", "-threads", "1", "-i", inp, *largs, "-i", bn, # threads 1 для экономии памяти
+                   "-filter_complex", f"[1:v]scale=720:-1[bn];[0:v][bn]overlay={coords}:enable='between(t,{start},{end})'[v]", 
+                   "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "copy", fpath]
             await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             p1 = f"temp/p1_{uid}.mp4"
             p2 = f"temp/p2_{uid}.mp4"
             pause_vid = f"temp/pause_vid_{uid}.mp4"
-            c1 = ["ffmpeg", "-y", "-threads", "2", "-i", inp, "-t", str(start), "-c", "copy", p1]
-            c2 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(start), "-i", inp, "-c", "copy", p2]
-            c3 = ["ffmpeg", "-y", "-threads", "2", "-ss", str(start), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
-                  "-filter_complex", f"[0:v]loop=loop=-1:size=1,setpts=N/(30*TB)[bg];[2:v]scale=1080:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
-                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "aac", "-t", str(dur), pause_vid]
-            c4 = ["ffmpeg", "-y", "-threads", "2", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "aac", fpath]
+            c1 = ["ffmpeg", "-y", "-threads", "1", "-i", inp, "-t", str(start), "-c", "copy", p1]
+            c2 = ["ffmpeg", "-y", "-threads", "1", "-ss", str(start), "-i", inp, "-c", "copy", p2]
+            c3 = ["ffmpeg", "-y", "-threads", "1", "-ss", str(start), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
+                  "-filter_complex", f"[0:v]loop=loop=-1:size=1,setpts=N/(30*TB)[bg];[2:v]scale=720:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
+                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", "-t", str(dur), pause_vid]
+            c4 = ["ffmpeg", "-y", "-threads", "1", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", fpath]
             for sc in (c1, c2, c3, c4):
                 await asyncio.to_thread(subprocess.run, sc, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for tf in (p1, p2, pause_vid):
