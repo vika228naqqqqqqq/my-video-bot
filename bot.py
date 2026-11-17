@@ -91,44 +91,33 @@ async def handle_link(m: Message):
     if not state or state.get("step") != "wait_video" or not state.get("banner_path"):
         await m.answer("Сначала нажми /start и отправь мне баннер, а потом ссылку!")
         return
-    msg = await m.answer("Скачиваю видео через yt-dlp... Это может занять пару минут.")
+    msg = await m.answer("Скачиваю видео... Это может занять пару минут.")
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
 
-    # Команда для yt-dlp с обходом блокировок
     ydl_cmd = [
         "yt-dlp",
-        # Выбираем лучшее качество до 720p, но в формате mp4
-        "-f", "best[height<=720][ext=mp4]/best[height<=720]/best",
-        # Указываем мобильные клиенты, которые реже блокируются
+        "-f", "best[height<=480][ext=mp4]/best[height<=480]/best",
         "--extractor-args", "youtube:player_client=android,ios,mweb,tv",
-        # Задержка между запросами, чтобы не злить YouTube
         "--sleep-requests", "2",
-        # Автоматические повторные попытки при ошибках 429/5xx
         "--retries", "5",
         "--fragment-retries", "5",
-        # Не создавать частичные файлы
         "--no-part",
-        # Путь для сохранения
         "-o", video_path,
-        # Ссылка
         m.text
     ]
 
     try:
-        # Запускаем в отдельном потоке, чтобы не блокировать бота
         result = await asyncio.to_thread(subprocess.run, ydl_cmd, capture_output=True, text=True)
-        
         if result.returncode != 0:
-            error_text = result.stderr[-800:]  # Берем последние 800 символов ошибки
+            error_text = result.stderr[-400:]
             await msg.edit_text(f"Ошибка YouTube:\n\n`{error_text}`", parse_mode="Markdown")
             return
-            
     except Exception as e:
         await msg.edit_text(f"Системная ошибка: {str(e)[:300]}")
         return
 
     if not os.path.exists(video_path):
-        await msg.edit_text("Ошибка: файл не был скачан (возможно, YouTube заблокировал запрос).")
+        await msg.edit_text("Ошибка: файл не был скачан.")
         return
 
     state["video_path"] = video_path
