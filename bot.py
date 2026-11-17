@@ -21,6 +21,14 @@ os.makedirs("temp", exist_ok=True)
 os.makedirs("banners", exist_ok=True)
 user_states = {}
 
+# СПИСОК РАБОЧИХ ИНСТАНСОВ COBALT (по состоянию на 2026 год)
+COBALT_INSTANCES = [
+    "https://cobalt-api.kwiatekmiki.com",
+    "https://cobalt.api.timelessnesses.me",
+    "https://cobalt.tools.nadeko.net",
+    "https://api.cobalt.tools" # Оставляем как запасной, вдруг заработает
+]
+
 def get_mode_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="1. Наложить поверх (видео идет)", callback_data="mode_overlay")],
@@ -77,48 +85,55 @@ async def handle_link(m: Message):
     if not state or state.get("step") != "wait_video" or not state.get("banner_path"):
         await m.answer("Сначала нажми /start и отправь мне баннер, а потом ссылку!")
         return
-    msg = await m.answer("Запрашиваю видео у сервера... Это займет около 10 секунд.")
+    msg = await m.answer("Запрашиваю видео у сервера...")
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
     
-    # Отправляем запрос на сервис Cobalt API
-    api_url = "https://api.cobalt.tools/api/json"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
     payload = {"url": m.text}
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    download_url = None
+    last_error = ""
 
+    # ПЕРЕБИРАЕМ ИНСТАНСЫ, ПОКА ОДИН НЕ ОТВЕТИТ
+    for instance in COBALT_INSTANCES:
+        api_url = f"{instance}/api/json" if not instance.endswith("/api/json") else instance
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_url, json=payload, headers=headers, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("status") == "error":
+                            last_error = data.get("text", "Неизвестная ошибка")
+                            continue # Пробуем следующий инстанс
+                        
+                        download_url = data.get("url")
+                        if download_url:
+                            break # Нашли рабочую ссылку, выходим из цикла
+                    else:
+                        last_error = f"HTTP {response.status}"
+        except Exception as e:
+            last_error = str(e)
+            continue # Пробуем следующий
+
+    if not download_url:
+        await msg.edit_text(f"Не удалось получить видео ни с одного сервера.\nПоследняя ошибка: {last_error}")
+        return
+
+    await msg.edit_text("Скачиваю видео... Осталось совсем немного.")
+    
+    # Скачиваем сам файл по прямой ссылке
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, json=payload, headers=headers) as response:
-                if response.status != 200:
-                    await msg.edit_text(f"Сервис скачивания временно недоступен (Код: {response.status}). Попробуйте позже.")
+            async with session.get(download_url) as video_resp:
+                if video_resp.status != 200:
+                    await msg.edit_text("Ошибка при скачивании файла.")
                     return
                 
-                data = await response.json()
-                if data.get("status") == "error":
-                    await msg.edit_text(f"Ошибка сервиса: {data.get('text', 'Не удалось получить ссылку')}")
-                    return
-                
-                download_url = data.get("url")
-                if not download_url:
-                    await msg.edit_text("Не удалось получить прямую ссылку на видео.")
-                    return
-                
-                await msg.edit_text("Скачиваю видео... Осталось совсем немного.")
-                
-                # Скачиваем сам файл по прямой ссылке
-                async with session.get(download_url) as video_resp:
-                    if video_resp.status != 200:
-                        await msg.edit_text("Ошибка при скачивании файла.")
-                        return
-                    
-                    with open(video_path, "wb") as f:
-                        async for chunk in video_resp.content.iter_chunked(1024 * 1024):
-                            f.write(chunk)
-
+                with open(video_path, "wb") as f:
+                    async for chunk in video_resp.content.iter_chunked(1024 * 1024):
+                        f.write(chunk)
     except Exception as e:
-        await msg.edit_text(f"Системная ошибка при скачивании: {e}")
+        await msg.edit_text(f"Ошибка при сохранении файла: {e}")
         return
 
     state["video_path"] = video_path
