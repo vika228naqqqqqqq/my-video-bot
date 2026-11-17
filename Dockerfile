@@ -1,6 +1,5 @@
 FROM python:3.10-slim
 
-# Устанавливаем только ffmpeg для монтажа. Никаких Node.js и Deno.
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
