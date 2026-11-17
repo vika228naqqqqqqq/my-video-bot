@@ -21,11 +21,6 @@ os.makedirs("temp", exist_ok=True)
 os.makedirs("banners", exist_ok=True)
 user_states = {}
 
-# --- НАСТРОЙКА ПРОКСИ (при необходимости) ---
-# Если у тебя есть прокси, раскомментируй и укажи его здесь:
-# PROXY = "http://username:password@proxy_host:proxy_port"
-PROXY = None # Пока не используется
-
 def get_mode_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="1. Наложить поверх (видео идет)", callback_data="mode_overlay")],
@@ -75,6 +70,21 @@ async def handle_banner(m: Message):
     state["step"] = "wait_video"
     await m.answer("Баннер принят! ✅\n\nТеперь **отправь мне ссылку** на YouTube.")
 
+@dp.message(F.video)
+async def handle_video(m: Message):
+    uid = m.from_user.id
+    state = user_states.get(uid)
+    if not state or state.get("step") != "wait_video" or not state.get("banner_path"):
+        await m.answer("Сначала нажми /start и отправь мне баннер, а потом видео!")
+        return
+    await m.answer("Скачиваю видео из Telegram...")
+    video_path = f"temp/input_{uid}_{m.message_id}.mp4"
+    f = await bot.get_file(m.video.file_id)
+    await bot.download_file(f.file_path, video_path)
+    state["video_path"] = video_path
+    state["step"] = "wait_mode"
+    await m.answer("Видео загружено! Выбери, как показать баннер:", reply_markup=get_mode_kb())
+
 @dp.message(F.text.startswith("http"))
 async def handle_link(m: Message):
     uid = m.from_user.id
@@ -86,36 +96,17 @@ async def handle_link(m: Message):
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
 
     try:
-        # --- ИСПОЛЬЗУЕМ ПРОКСИ И КУКИ (если настроены) ---
-        proxies = None
-        if PROXY:
-            proxies = {"http": PROXY, "https": PROXY}
-
-        # Создаем объект YouTube с прокси (если есть)
-        yt = YouTube(
-            m.text,
-            proxies=proxies,  # Использование прокси для обхода блокировки по IP[reference:5]
-            use_oauth=True,   # Включаем OAuth для авторизации
-            allow_oauth_cache=True # Кэшируем токены, чтобы не запрашивать каждый раз[reference:6]
-        )
-
-        # Выбираем лучшее качество, но не тяжелее 720p
+        yt = YouTube(m.text, use_oauth=True, allow_oauth_cache=True)
         stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-        
         if not stream:
             stream = yt.streams.filter(file_extension='mp4').first()
-
         if not stream:
             await msg.edit_text("Не удалось найти подходящий видео-поток.")
             return
-
-        # Скачиваем в отдельном потоке, чтобы не блокировать бота
         await asyncio.to_thread(stream.download, output_path="temp", filename=os.path.basename(video_path))
-        
         if not os.path.exists(video_path):
             await msg.edit_text("Ошибка: файл не был скачан.")
             return
-
     except Exception as e:
         await msg.edit_text(f"Ошибка при скачивании: {str(e)[:300]}")
         return
@@ -124,4 +115,102 @@ async def handle_link(m: Message):
     state["step"] = "wait_mode"
     await msg.edit_text("Видео скачано! Выбери, как показать баннер:", reply_markup=get_mode_kb())
 
-# ... (остальной код для монтажа и обработки кнопок остается без изменений) ...
+@dp.callback_query(F.data.startswith("mode_"))
+async def handle_mode(cb: CallbackQuery):
+    uid = cb.from_user.id
+    state = user_states.get(uid)
+    if not state: return
+    await cb.answer()
+    state["mode"] = cb.data.replace("mode_", "")
+    state["step"] = "wait_pos"
+    await cb.message.edit_text("Где разместить баннер?", reply_markup=get_pos_kb())
+
+@dp.callback_query(F.data.startswith("pos_"))
+async def handle_pos(cb: CallbackQuery):
+    uid = cb.from_user.id
+    state = user_states.get(uid)
+    if not state: return
+    await cb.answer()
+    state["pos"] = cb.data
+    state["step"] = "wait_timing"
+    await cb.message.edit_text("Отлично! Теперь напиши мне два числа через пробел:\n**Секунда появления** и **Длительность**.\n\nПример: `20 6`")
+
+@dp.message(F.text)
+async def handle_timing(m: Message):
+    uid = m.from_user.id
+    state = user_states.get(uid)
+    if not state or state.get("step") != "wait_timing": return
+    try:
+        parts = m.text.replace(",", ".").split()
+        start_sec = float(parts[0])
+        duration = float(parts[1])
+        if start_sec < 0 or duration <= 0: raise ValueError
+    except:
+        await m.answer("Пожалуйста, напиши два числа через пробел. Например: `20 6`")
+        return
+    state["step"] = "processing"
+    state["start_sec"] = start_sec
+    state["duration"] = duration
+    await m.answer(f"Монтирую (с {start_sec} сек., длительность {duration} сек.)...")
+    await run_montage(m, uid)
+
+async def run_montage(msg: Message, uid: int):
+    state = user_states.get(uid)
+    if not state: return
+    inp = state["video_path"]
+    bn = state["banner_path"]
+    mode = state["mode"]
+    pos = state["pos"]
+    start = state["start_sec"]
+    dur = state["duration"]
+    end = start + dur
+    fpath = f"temp/final_{uid}_{msg.message_id}.mp4"
+    coords_map = {"pos_top": "0:150", "pos_center": "0:(H-h)/2", "pos_bottom": "0:1050"}
+    coords = coords_map.get(pos, "0:(H-h)/2")
+    largs = ["-ignore_loop", "0"] if bn.lower().endswith((".gif", ".png", ".jpg", ".jpeg")) else ["-stream_loop", "-1"]
+    
+    try:
+        if mode == "overlay":
+            cmd = ["ffmpeg", "-y", "-threads", "1", "-i", inp, *largs, "-i", bn, 
+                   "-filter_complex", f"[1:v]scale=720:-1[bn];[0:v][bn]overlay={coords}:enable='between(t,{start},{end})'[v]", 
+                   "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "copy", fpath]
+            await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            p1 = f"temp/p1_{uid}.mp4"
+            p2 = f"temp/p2_{uid}.mp4"
+            pause_vid = f"temp/pause_vid_{uid}.mp4"
+            c1 = ["ffmpeg", "-y", "-threads", "1", "-i", inp, "-t", str(start), "-c", "copy", p1]
+            c2 = ["ffmpeg", "-y", "-threads", "1", "-ss", str(start), "-i", inp, "-c", "copy", p2]
+            c3 = ["ffmpeg", "-y", "-threads", "1", "-ss", str(start), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
+                  "-filter_complex", f"[0:v]loop=loop=-1:size=1,setpts=N/(30*TB)[bg];[2:v]scale=720:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
+                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", "-t", str(dur), pause_vid]
+            c4 = ["ffmpeg", "-y", "-threads", "1", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", fpath]
+            for sc in (c1, c2, c3, c4):
+                await asyncio.to_thread(subprocess.run, sc, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for tf in (p1, p2, pause_vid):
+                if os.path.exists(tf): os.remove(tf)
+        await msg.answer_video(FSInputFile(fpath))
+        await msg.answer("Готово! Видео обработано.")
+    except Exception as e:
+        await msg.edit_text(f"Ошибка при монтаже: {e}")
+    finally:
+        if os.path.exists(inp): os.remove(inp)
+        if os.path.exists(fpath): os.remove(fpath)
+        user_states[uid] = {"step": "wait_banner", "banner_path": None, "video_path": None}
+
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def main():
+    print("Бот запущен!")
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
