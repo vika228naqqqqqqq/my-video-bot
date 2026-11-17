@@ -1,11 +1,11 @@
 import os
 import asyncio
-import aiohttp
 import subprocess
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pytubefix import YouTube
 
 TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
@@ -20,14 +20,6 @@ dp = Dispatcher()
 os.makedirs("temp", exist_ok=True)
 os.makedirs("banners", exist_ok=True)
 user_states = {}
-
-# СПИСОК РАБОЧИХ ИНСТАНСОВ COBALT (по состоянию на 2026 год)
-COBALT_INSTANCES = [
-    "https://cobalt-api.kwiatekmiki.com",
-    "https://cobalt.api.timelessnesses.me",
-    "https://cobalt.tools.nadeko.net",
-    "https://api.cobalt.tools" # Оставляем как запасной, вдруг заработает
-]
 
 def get_mode_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -85,55 +77,32 @@ async def handle_link(m: Message):
     if not state or state.get("step") != "wait_video" or not state.get("banner_path"):
         await m.answer("Сначала нажми /start и отправь мне баннер, а потом ссылку!")
         return
-    msg = await m.answer("Запрашиваю видео у сервера...")
+    msg = await m.answer("Скачиваю видео... Это займет около минуты.")
     video_path = f"temp/input_{uid}_{m.message_id}.mp4"
-    
-    payload = {"url": m.text}
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    download_url = None
-    last_error = ""
 
-    # ПЕРЕБИРАЕМ ИНСТАНСЫ, ПОКА ОДИН НЕ ОТВЕТИТ
-    for instance in COBALT_INSTANCES:
-        api_url = f"{instance}/api/json" if not instance.endswith("/api/json") else instance
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(api_url, json=payload, headers=headers, timeout=15) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get("status") == "error":
-                            last_error = data.get("text", "Неизвестная ошибка")
-                            continue # Пробуем следующий инстанс
-                        
-                        download_url = data.get("url")
-                        if download_url:
-                            break # Нашли рабочую ссылку, выходим из цикла
-                    else:
-                        last_error = f"HTTP {response.status}"
-        except Exception as e:
-            last_error = str(e)
-            continue # Пробуем следующий
-
-    if not download_url:
-        await msg.edit_text(f"Не удалось получить видео ни с одного сервера.\nПоследняя ошибка: {last_error}")
-        return
-
-    await msg.edit_text("Скачиваю видео... Осталось совсем немного.")
-    
-    # Скачиваем сам файл по прямой ссылке
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(download_url) as video_resp:
-                if video_resp.status != 200:
-                    await msg.edit_text("Ошибка при скачивании файла.")
-                    return
-                
-                with open(video_path, "wb") as f:
-                    async for chunk in video_resp.content.iter_chunked(1024 * 1024):
-                        f.write(chunk)
+        # Используем pytubefix с обходом через встроенный клиент
+        yt = YouTube(m.text, use_oauth=True, allow_oauth_cache=False)
+        # Выбираем лучшее качество, но не тяжелее 720p
+        stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+        
+        if not stream:
+            # Если прогрессивного нет, берем любой видео-поток
+            stream = yt.streams.filter(file_extension='mp4').first()
+
+        if not stream:
+            await msg.edit_text("Не удалось найти подходящий видео-поток.")
+            return
+
+        # Скачиваем в отдельном потоке, чтобы не блокировать бота
+        await asyncio.to_thread(stream.download, output_path="temp", filename=os.path.basename(video_path))
+        
+        if not os.path.exists(video_path):
+            await msg.edit_text("Ошибка: файл не был скачан.")
+            return
+
     except Exception as e:
-        await msg.edit_text(f"Ошибка при сохранении файла: {e}")
+        await msg.edit_text(f"Ошибка при скачивании: {str(e)[:300]}")
         return
 
     state["video_path"] = video_path
@@ -192,12 +161,13 @@ async def run_montage(msg: Message, uid: int):
     fpath = f"temp/final_{uid}_{msg.message_id}.mp4"
     coords_map = {"pos_top": "0:150", "pos_center": "0:(H-h)/2", "pos_bottom": "0:1050"}
     coords = coords_map.get(pos, "0:(H-h)/2")
+    # Используем один поток для ffmpeg, чтобы не перегружать память
     largs = ["-ignore_loop", "0"] if bn.lower().endswith((".gif", ".png", ".jpg", ".jpeg")) else ["-stream_loop", "-1"]
     try:
         if mode == "overlay":
             cmd = ["ffmpeg", "-y", "-threads", "1", "-i", inp, *largs, "-i", bn, 
                    "-filter_complex", f"[1:v]scale=720:-1[bn];[0:v][bn]overlay={coords}:enable='between(t,{start},{end})'[v]", 
-                   "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "copy", fpath]
+                   "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "copy", fpath]
             await asyncio.to_thread(subprocess.run, cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             p1 = f"temp/p1_{uid}.mp4"
@@ -207,8 +177,8 @@ async def run_montage(msg: Message, uid: int):
             c2 = ["ffmpeg", "-y", "-threads", "1", "-ss", str(start), "-i", inp, "-c", "copy", p2]
             c3 = ["ffmpeg", "-y", "-threads", "1", "-ss", str(start), "-i", inp, "-vframes", "1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", *largs, "-i", bn, 
                   "-filter_complex", f"[0:v]loop=loop=-1:size=1,setpts=N/(30*TB)[bg];[2:v]scale=720:-1[bn];[bg][bn]overlay={coords}:shortest=1[v]", 
-                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "aac", "-t", str(dur), pause_vid]
-            c4 = ["ffmpeg", "-y", "-threads", "1", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "aac", fpath]
+                  "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", "-t", str(dur), pause_vid]
+            c4 = ["ffmpeg", "-y", "-threads", "1", "-i", p1, "-i", pause_vid, "-i", p2, "-filter_complex", "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", fpath]
             for sc in (c1, c2, c3, c4):
                 await asyncio.to_thread(subprocess.run, sc, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for tf in (p1, p2, pause_vid):
