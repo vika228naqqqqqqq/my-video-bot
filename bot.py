@@ -128,6 +128,7 @@ async def handle_link(m: Message):
     ydl_cmd = [
         "yt-dlp",
         "--cookies", temp_cookies_path,
+        "--js-runtimes", "deno:/opt/render/.deno/bin/deno",
         "--extractor-args", "youtube:player_client=tv,mweb",
         "-f", "bestvideo[height<=1080]+bestaudio/best",
         "--merge-output-format", "mp4",
