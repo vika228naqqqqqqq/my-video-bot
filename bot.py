@@ -1,7 +1,7 @@
 import os
 import asyncio
 import subprocess
-import shutil  # <-- ДОБАВЛЕНО ДЛЯ КОПИРОВАНИЯ ФАЙЛА КУКОВ
+import shutil
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -129,6 +129,7 @@ async def handle_link(m: Message):
         "yt-dlp",
         "--cookies", temp_cookies_path,
         "--js-runtimes", "deno:/opt/render/.deno/bin/deno",
+        "--remote-components", "ejs:github",
         "--extractor-args", "youtube:player_client=tv,mweb",
         "-f", "bestvideo[height<=1080]+bestaudio/best",
         "--merge-output-format", "mp4",
