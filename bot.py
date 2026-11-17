@@ -108,21 +108,33 @@ async def handle_link(m: Message):
     ydl_cmd = [
         "yt-dlp",
         "--cookies", temp_cookies_path,
-        "--js-runtimes", "deno:/opt/render/.deno/bin/deno",
+        "--js-runtimes", "deno:/usr/local/bin/deno",
         "--remote-components", "ejs:github",
         "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
         "--extractor-args", "youtube:player_client=web,mweb,android",
-        "--impersonate", "chrome",
         "-f", "bestvideo[height<=1080]+bestaudio/best",
         "--merge-output-format", "mp4",
         "-o", video_path,
         m.text
     ]
+    
     try:
-        await asyncio.to_thread(subprocess.run, ydl_cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        await msg.edit_text(f"Не удалось скачать видео по ссылке. Ошибка: {e}")
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ydl_cmd,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            error_text = result.stderr[-1000:] 
+            await msg.edit_text(f"Ошибка YouTube:\n\n`{error_text}`", parse_mode="Markdown")
+            return
+            
+    except Exception as e:
+        await msg.edit_text(f"Системная ошибка: {e}")
         return
+
     state["video_path"] = video_path
     state["step"] = "wait_mode"
     await msg.edit_text("Видео скачано! Выбери, как показать баннер:", reply_markup=get_mode_kb())
@@ -203,7 +215,7 @@ async def run_montage(msg: Message, uid: int):
         await msg.answer_video(FSInputFile(fpath))
         await msg.answer("Готово! Видео обработано.")
     except Exception as e:
-        await msg.edit_text(f"Ошибка: {e}")
+        await msg.edit_text(f"Ошибка при монтаже: {e}")
     finally:
         if os.path.exists(inp): os.remove(inp)
         if os.path.exists(fpath): os.remove(fpath)
